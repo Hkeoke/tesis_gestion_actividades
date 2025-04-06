@@ -613,3 +613,57 @@ export const calculateOverloadPaymentApi = async (
     );
   }
 };
+
+/**
+ * Descarga el reporte de sobrecarga docente en formato PDF o Excel
+ * @param {string} type - Tipo de reporte (teaching-overload, overload-payment)
+ * @param {string} format - Formato de descarga (pdf, excel)
+ * @param {object} params - Parámetros adicionales (startDate, endDate, roleId, categoryId, fondoSalario)
+ */
+export const downloadReportApi = async (type, format, params) => {
+  try {
+    // Construir URL base con parámetros obligatorios
+    let url = `/reports/${type}/${format}?startDate=${params.startDate}&endDate=${params.endDate}`;
+
+    // Añadir parámetros opcionales si existen
+    if (params.roleId) url += `&roleId=${params.roleId}`;
+    if (params.categoryId) url += `&categoryId=${params.categoryId}`;
+    if (params.fondoSalario) url += `&fondoSalario=${params.fondoSalario}`;
+
+    // Configurar la respuesta como un blob para descargar
+    const response = await api.get(url, {
+      responseType: "blob",
+    });
+
+    // Crear un objeto URL y un enlace para descargar el archivo
+    const blob = new Blob([response.data]);
+    const downloadUrl = window.URL.createObjectURL(blob);
+
+    // Determinar el nombre del archivo y extensión
+    const fileExtension = format === "pdf" ? "pdf" : "xlsx";
+    const reportType =
+      type === "teaching-overload" ? "Sobrecarga_Docente" : "Pago_Sobrecarga";
+    const fileName = `${reportType}_${params.startDate}_a_${params.endDate}.${fileExtension}`;
+
+    // Crear elemento de enlace temporal para la descarga
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.setAttribute("download", fileName);
+    document.body.appendChild(link);
+    link.click();
+
+    // Limpiar
+    link.parentNode.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
+
+    return true;
+  } catch (error) {
+    console.error(
+      `Error descargando reporte ${type} en formato ${format}:`,
+      error
+    );
+    throw new Error(
+      `Error al descargar el reporte. ${error.message || "Intente nuevamente."}`
+    );
+  }
+};

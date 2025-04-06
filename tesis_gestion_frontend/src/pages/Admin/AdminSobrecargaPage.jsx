@@ -25,6 +25,7 @@ import {
   getReportFiltersApi,
   getTeachingOverloadDataApi,
   calculateOverloadPaymentApi,
+  downloadReportApi,
 } from "../../services/adminApi";
 
 // Formatear fecha para mostrar
@@ -122,6 +123,7 @@ function AdminSobrecargaPage() {
         selectedRoleId || null,
         selectedCategoryId || null
       );
+      console.log("data", data);
       setOverloadData(data);
     } catch (err) {
       console.error("Error cargando datos de sobrecarga:", err);
@@ -165,47 +167,46 @@ function AdminSobrecargaPage() {
   };
 
   // Descargar reportes
-  const downloadReport = (type, format) => {
-    const params = {
-      roleId: selectedRoleId || null,
-      categoryId: selectedCategoryId || null,
-    };
+  const downloadReport = async (type, format) => {
+    try {
+      const params = {
+        startDate,
+        endDate,
+        roleId: selectedRoleId || undefined,
+        categoryId: selectedCategoryId || undefined,
+      };
 
-    if (type === "overload-payment" && fondoSalario) {
-      params.fondoSalario = fondoSalario;
+      if (type === "overload-payment" && fondoSalario) {
+        params.fondoSalario = fondoSalario;
+      }
+
+      await downloadReportApi(type, format, params);
+    } catch (err) {
+      console.error(`Error descargando reporte ${type}:`, err);
+      setError(
+        err.message || "Error al descargar el reporte. Intenta nuevamente."
+      );
     }
-
-    // Construir URL según el formato de la API con el prefijo api
-    let url = `${
-      process.env.REACT_APP_API_URL || ""
-    }/api/reports/${type}/${format}?startDate=${startDate}&endDate=${endDate}`;
-
-    Object.keys(params).forEach((key) => {
-      if (params[key]) url += `&${key}=${params[key]}`;
-    });
-
-    // Usar window.open para abrir en una nueva pestaña
-    window.open(url, "_blank");
   };
 
   // Botón para descargar PDF
-  const handleDownloadPDF = () => {
-    downloadReport("teaching-overload", "pdf");
+  const handleDownloadPDF = async () => {
+    await downloadReport("teaching-overload", "pdf");
   };
 
   // Botón para descargar Excel
-  const handleDownloadExcel = () => {
-    downloadReport("teaching-overload", "excel");
+  const handleDownloadExcel = async () => {
+    await downloadReport("teaching-overload", "excel");
   };
 
   // Botón para descargar informe de pago PDF
-  const handleDownloadPaymentPDF = () => {
-    downloadReport("overload-payment", "pdf");
+  const handleDownloadPaymentPDF = async () => {
+    await downloadReport("overload-payment", "pdf");
   };
 
   // Botón para descargar informe de pago Excel
-  const handleDownloadPaymentExcel = () => {
-    downloadReport("overload-payment", "excel");
+  const handleDownloadPaymentExcel = async () => {
+    await downloadReport("overload-payment", "excel");
   };
 
   // Cargar datos cuando cambian los filtros o el rango de fechas
@@ -219,11 +220,14 @@ function AdminSobrecargaPage() {
   const filteredData = useMemo(() => {
     if (!searchTerm.trim()) return overloadData;
 
+    const searchTermLower = searchTerm.toLowerCase();
     return overloadData.filter(
       (item) =>
-        item.profesor.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (item.categoria &&
-          item.categoria.toLowerCase().includes(searchTerm.toLowerCase()))
+        `${item.nombre} ${item.apellidos}`
+          .toLowerCase()
+          .includes(searchTermLower) ||
+        (item.nombre_categoria &&
+          item.nombre_categoria.toLowerCase().includes(searchTermLower))
     );
   }, [overloadData, searchTerm]);
 
@@ -373,13 +377,16 @@ function AdminSobrecargaPage() {
               <FileArchive size={18} className="mr-2" />
               Excel
             </button>
-            <button
-              onClick={() => setShowPaymentCalc(!showPaymentCalc)}
-              className="flex items-center px-3 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 shadow-sm"
-            >
-              <Calculator size={18} className="mr-2" />
-              {showPaymentCalc ? "Ocultar Calculadora" : "Calculadora de Pago"}
-            </button>
+            {/* <button
+                onClick={() => setShowPaymentCalc(!showPaymentCalc)}
+                className="flex items-center px-3 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 shadow-sm"
+              >
+                <Calculator size={18} className="mr-2" />
+                {showPaymentCalc
+                  ? "Ocultar Calculadora"
+                  : "Calculadora de Pago"}
+              </button>
+           */}
           </div>
         </div>
       </div>
@@ -583,12 +590,12 @@ function AdminSobrecargaPage() {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {filteredData.map((item, index) => (
                     <tr
-                      key={item.profesor_id || index}
+                      key={item.usuario_id || index}
                       className="hover:bg-gray-50"
                     >
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">
-                          {item.profesor}
+                          {`${item.nombre} ${item.apellidos}`}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -598,12 +605,12 @@ function AdminSobrecargaPage() {
                             className="text-indigo-500 mr-2"
                           />
                           <span className="text-sm text-gray-700">
-                            {item.categoria || "No asignada"}
+                            {item.nombre_categoria || "No asignada"}
                           </span>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                        {item.horas_semana || 0}
+                        {item.total_horas || 0}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className="px-2.5 py-0.5 inline-flex text-sm leading-5 font-medium rounded-full bg-indigo-100 text-indigo-800">
@@ -613,9 +620,9 @@ function AdminSobrecargaPage() {
                       {paymentData && (
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                           {paymentData.pagos &&
-                            paymentData.pagos[item.profesor_id] &&
+                            paymentData.pagos[item.usuario_id] &&
                             Number(
-                              paymentData.pagos[item.profesor_id]
+                              paymentData.pagos[item.usuario_id]
                             ).toLocaleString("es-CU", {
                               style: "currency",
                               currency: "CUP",

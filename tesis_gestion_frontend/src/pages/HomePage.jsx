@@ -9,7 +9,7 @@ function HomePage() {
     <div className="bg-lime-500 flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-indigo-100 via-purple-100 to-pink-100 text-gray-800 p-6">
       <div className="text-center bg-white p-10 rounded-xl shadow-lg max-w-2xl">
         <h1 className="text-4xl md:text-5xl font-bold mb-4 text-indigo-700">
-          Bienvenid@ al Sistema de Gestión de Actividades del Departamento de
+          Bienvenid@ al Sistema de Control de Actividades del Departamento de
           Matemáticas
         </h1>
         <p className="text-lg md:text-xl mb-8 text-gray-600">

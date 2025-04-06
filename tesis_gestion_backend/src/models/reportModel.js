@@ -374,6 +374,234 @@ const reportModel = {
       throw error;
     }
   },
+
+  /**
+   * Calcula el coeficiente de sobrecarga por categoría docente
+   * @param {number} fondoSalarioNoEjecutado - Fondo disponible para pagos
+   * @param {object} horasPorCategoria - Horas de sobrecarga por categoría
+   * @returns {object} Coeficientes por categoría
+   */
+  calcularCoeficientesSobrecarga: (
+    fondoSalarioNoEjecutado,
+    horasPorCategoria
+  ) => {
+    // Tarifas horarias por categoría según resolución
+    const tarifasHorarias = {
+      Titular: 100,
+      Auxiliar: 90,
+      Asistente: 80,
+      Instructor: 70,
+      "Recién graduado": 70,
+    };
+
+    // Calcular fondo necesario total
+    let fondoNecesario = 0;
+    Object.entries(horasPorCategoria).forEach(([categoria, horas]) => {
+      fondoNecesario += horas * tarifasHorarias[categoria];
+    });
+
+    // Calcular porcentaje del fondo disponible
+    const porcentajeFondo = Math.min(
+      1,
+      fondoSalarioNoEjecutado / fondoNecesario
+    );
+
+    // Calcular coeficiente por categoría
+    const coeficientes = {};
+    Object.entries(horasPorCategoria).forEach(([categoria, _]) => {
+      coeficientes[categoria] = Math.min(
+        tarifasHorarias[categoria],
+        porcentajeFondo * tarifasHorarias[categoria]
+      );
+    });
+
+    return coeficientes;
+  },
+
+  /**
+   * Genera el reporte de sobrecarga docente según Resolución 32/2024
+   */
+  generateTeachingOverloadReport: async (
+    startDate,
+    endDate,
+    departmentId = null
+  ) => {
+    // Consulta SQL para obtener datos de actividades docentes
+    const query = `
+      SELECT 
+        u.id,
+        u.nombre,
+        u.apellidos,
+        c.nombre as categoria,
+        SUM(CASE 
+          WHEN ta.nombre LIKE '%Pregrado%' THEN ap.horas_dedicadas
+          ELSE 0 
+        END) as horas_pregrado,
+        SUM(CASE 
+          WHEN ta.nombre LIKE '%Preparación%' THEN ap.horas_dedicadas
+          ELSE 0 
+        END) as horas_preparacion,
+        COUNT(DISTINCT ap.grupo_clase) as cantidad_grupos,
+        SUM(ap.cantidad_estudiantes) as total_estudiantes,
+        SUM(ap.horas_dedicadas) as total_horas
+      FROM usuarios u
+      JOIN categorias c ON u.categoria_id = c.id
+      LEFT JOIN actividades_plan ap ON u.id = ap.usuario_id
+      LEFT JOIN tipos_actividad ta ON ap.tipo_actividad_id = ta.id
+      WHERE ap.fecha BETWEEN $1 AND $2
+      ${departmentId ? "AND u.departamento_id = $3" : ""}
+      GROUP BY u.id, u.nombre, u.apellidos, c.nombre
+      HAVING SUM(CASE WHEN ta.nombre LIKE '%Pregrado%' THEN ap.horas_dedicadas ELSE 0 END) > 0
+    `;
+
+    const params = [startDate, endDate];
+    if (departmentId) params.push(departmentId);
+
+    const { rows } = await db.query(query, params);
+
+    // Procesar resultados
+    const profesores = rows.map((row) => ({
+      ...row,
+      horas_sobrecarga: Math.max(0, row.total_horas - 114), // 114 = 60% de 190.6
+      horas_dia: row.total_horas / 24, // Considerando mes de 24 días laborables
+      horas_sin_domingos: row.total_horas / 21, // Considerando mes sin domingos
+    }));
+
+    return profesores;
+  },
+
+  /**
+   * Calcula el pago por sobrecarga docente según la Resolución 32/2024
+   * @param {string} startDate - Fecha de inicio (YYYY-MM-DD)
+   * @param {string} endDate - Fecha de fin (YYYY-MM-DD)
+   * @param {number} fondoSalario - Fondo de salario no ejecutado disponible
+   * @returns {Promise<object>} Datos de pago calculados
+   */
+  calculateOverloadPayment: async (startDate, endDate, fondoSalario) => {
+    try {
+      // 1. Obtener profesores con horas trabajadas
+      const query = `
+        SELECT 
+          u.id, 
+          u.nombre, 
+          u.apellidos, 
+          CONCAT(u.apellidos, ' ', u.nombre) as nombre_completo,
+          c.nombre as categoria,
+          c.horas_norma_semanal,
+          SUM(ap.horas_dedicadas) as total_horas,
+          SUM(CASE 
+            WHEN ta.nombre LIKE '%Pregrado%' OR ta.nombre = 'Docencia Directa de Pregrado y Posgrado' 
+            THEN ap.horas_dedicadas 
+            ELSE 0 
+          END) as horas_pregrado
+        FROM usuarios u
+        JOIN categorias c ON u.categoria_id = c.id
+        JOIN actividades_plan ap ON u.id = ap.usuario_id
+        JOIN tipos_actividad ta ON ap.tipo_actividad_id = ta.id
+        WHERE ap.fecha BETWEEN $1 AND $2
+        GROUP BY u.id, u.nombre, u.apellidos, c.nombre, c.horas_norma_semanal
+        HAVING SUM(CASE 
+          WHEN ta.nombre LIKE '%Pregrado%' OR ta.nombre = 'Docencia Directa de Pregrado y Posgrado' 
+          THEN ap.horas_dedicadas 
+          ELSE 0 
+        END) > 0
+      `;
+
+      const { rows } = await db.query(query, [startDate, endDate]);
+
+      // 2. Calcular horas de sobrecarga por profesor (THP - 114h)
+      const profesores = rows.map((profesor) => ({
+        ...profesor,
+        horas_sobrecarga: Math.max(0, parseFloat(profesor.total_horas) - 114), // 114 = 60% de 190.6
+      }));
+
+      // 3. Definir tarifas por categoría
+      const tarifasPorCategoria = {
+        Titular: 100,
+        Auxiliar: 90,
+        Asistente: 80,
+        Instructor: 70,
+        "Recién Graduado": 70,
+      };
+
+      // 4. Calcular horas por categoría y fondo necesario
+      const horasPorCategoria = {};
+      let fondoNecesario = 0;
+      let totalHorasSobrecarga = 0;
+
+      profesores.forEach((profesor) => {
+        if (profesor.horas_sobrecarga > 0) {
+          const categoria = profesor.categoria;
+          if (!horasPorCategoria[categoria]) {
+            horasPorCategoria[categoria] = 0;
+          }
+          horasPorCategoria[categoria] += profesor.horas_sobrecarga;
+          totalHorasSobrecarga += profesor.horas_sobrecarga;
+          fondoNecesario +=
+            profesor.horas_sobrecarga * tarifasPorCategoria[categoria];
+        }
+      });
+
+      // 5. Calcular porcentaje del fondo disponible
+      const porcentajeFondo = Math.min(1, fondoSalario / fondoNecesario);
+
+      // 6. Calcular coeficientes por categoría
+      const coeficientesPorCategoria = [];
+      Object.entries(horasPorCategoria).forEach(([categoria, horas]) => {
+        const tarifa = tarifasPorCategoria[categoria] || 70;
+        const coeficiente = Math.min(tarifa, porcentajeFondo * tarifa);
+
+        coeficientesPorCategoria.push({
+          categoria,
+          tarifa_horaria: tarifa,
+          horas_sobrecarga: horas,
+          coeficiente,
+        });
+      });
+
+      // 7. Calcular pago por profesor
+      const profesoresAPagar = profesores
+        .filter((p) => p.horas_sobrecarga > 0)
+        .map((profesor) => {
+          const categoria = profesor.categoria;
+          const tarifa = tarifasPorCategoria[categoria] || 70;
+          const coeficiente = Math.min(tarifa, porcentajeFondo * tarifa);
+
+          return {
+            id: profesor.id,
+            nombre_completo: profesor.nombre_completo,
+            categoria,
+            horas_sobrecarga: profesor.horas_sobrecarga,
+            coeficiente,
+            monto_pagar: parseFloat(
+              (coeficiente * profesor.horas_sobrecarga).toFixed(2)
+            ),
+          };
+        });
+
+      // 8. Calcular total a pagar
+      const totalAPagar = profesoresAPagar.reduce(
+        (sum, prof) => sum + prof.monto_pagar,
+        0
+      );
+
+      return {
+        coeficientes_por_categoria: coeficientesPorCategoria,
+        profesores_a_pagar: profesoresAPagar,
+        resumen: {
+          fondo_salario_no_ejecutado: fondoSalario,
+          fondo_salario_necesario: fondoNecesario,
+          porcentaje_fondo: porcentajeFondo,
+          total_horas_sobrecarga: totalHorasSobrecarga,
+          total_profesores: profesoresAPagar.length,
+          total_a_pagar: totalAPagar,
+        },
+      };
+    } catch (error) {
+      console.error("Error calculando pago por sobrecarga:", error);
+      throw error;
+    }
+  },
 };
 
 // Función auxiliar para obtener la tarifa horaria por categoría

@@ -36,19 +36,4 @@ router.get(
   reportController.generateTeachingOverloadExcel
 );
 
-// GET /api/reports/overload-payment?startDate=...&endDate=...&fondoSalario=...
-router.get("/overload-payment", reportController.calculateOverloadPayment);
-
-// GET /api/reports/overload-payment/pdf?startDate=...&endDate=...&fondoSalario=...
-router.get(
-  "/overload-payment/pdf",
-  reportController.generateOverloadPaymentPDF
-);
-
-// GET /api/reports/overload-payment/excel?startDate=...&endDate=...&fondoSalario=...
-router.get(
-  "/overload-payment/excel",
-  reportController.generateOverloadPaymentExcel
-);
-
 module.exports = router;
